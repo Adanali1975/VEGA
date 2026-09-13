@@ -1,15 +1,13 @@
-name: Uygulama paketi
+name: Android APK
 
-# Kendi bilgisayarinizda Flutter, Xcode veya Android Studio kurmanize gerek
-# yok. Actions sekmesinden "Run workflow" deyin; islem bitince Artifacts
-# bolumunden .ipa ve .apk dosyalarini indirin.
+# Bu is akisi kaynak kodu depoya ayri ayri yuklemenizi gerektirmez.
+# Depoda duran vega-iptv-mobil.zip dosyasini kendisi acar ve derler.
 #
-# iOS cikti dosyasi IMZASIZDIR. Windows'ta Sideloadly ya da AltStore ile
-# kendi Apple ID'nizle imzalayip iPhone'a kurarsiniz.
+# Dosyanin depodaki yeri SU OLMALI:
+#   .github/workflows/paket.yml
+# Baska bir klasorde duruyorsa GitHub onu calistirmaz.
 
 on:
-  # Dosyalari yukler yuklemez derleme kendiliginden baslar;
-  # ayrica Actions sekmesinden elle de calistirilabilir.
   push:
   workflow_dispatch:
 
@@ -17,64 +15,42 @@ permissions:
   contents: write
 
 jobs:
-  # ---------------------------------------------------------------
-  # iOS
-  # ---------------------------------------------------------------
-  ios:
-    runs-on: macos-14
-    steps:
-      - name: Kaynagi al
-        uses: actions/checkout@v4
-
-      - name: Flutter kur
-        uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-
-      - name: Platform iskeletini uret
-        # ios/ klasoru depoda tutulmaz. Iskeleti ayri bir klasorde uretip
-        # kopyalariz; boylece lib/ ve pubspec.yaml hicbir kosulda
-        # uzerine yazilmaz.
-        run: |
-          flutter create --platforms=ios --org com.vega \
-            --project-name vega_iptv /tmp/iskelet
-          cp -R /tmp/iskelet/ios ./ios
-
-      - name: iOS ayarlarini uygula
-        run: bash tool/patch_ios.sh
-
-      - name: Paketleri indir
-        run: flutter pub get
-
-      - name: Derle (imzasiz)
-        run: flutter build ios --release --no-codesign
-
-      - name: IPA paketle
-        run: |
-          cd build/ios/iphoneos
-          mkdir -p Payload
-          cp -R Runner.app Payload/
-          zip -qry VegaIPTV.ipa Payload
-          cd -
-          mkdir -p cikti
-          mv build/ios/iphoneos/VegaIPTV.ipa cikti/
-
-      - name: IPA dosyasini yukle
-        uses: actions/upload-artifact@v4
-        with:
-          name: VegaIPTV-ios-imzasiz
-          path: cikti/VegaIPTV.ipa
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------
-  # Android
-  # ---------------------------------------------------------------
   android:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Kaynagi al
+      - name: Depoyu al
         uses: actions/checkout@v4
+
+      - name: Zip dosyasini ac
+        id: kaynak
+        run: |
+          set -e
+          # Depodaki zip dosyasini bul (adi ne olursa olsun)
+          ZIP=$(find . -maxdepth 2 -iname "*.zip" | head -n 1)
+          if [ -z "$ZIP" ]; then
+            echo "HATA: Depoda zip dosyasi bulunamadi."
+            echo "vega-iptv-mobil.zip dosyasini depoya yukleyin."
+            exit 1
+          fi
+          echo "Bulunan zip: $ZIP"
+          mkdir -p /tmp/kaynak
+          unzip -q "$ZIP" -d /tmp/kaynak
+
+          # pubspec.yaml hangi klasordeyse kaynak orasidir
+          PUBSPEC=$(find /tmp/kaynak -name pubspec.yaml | head -n 1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "HATA: Zip icinde pubspec.yaml yok."
+            echo "Yanlis zip yuklenmis olabilir."
+            find /tmp/kaynak -maxdepth 2 | head -30
+            exit 1
+          fi
+          KOK=$(dirname "$PUBSPEC")
+          echo "Kaynak klasoru: $KOK"
+          echo "kok=$KOK" >> "$GITHUB_OUTPUT"
+
+          echo "--- icerik ---"
+          ls -la "$KOK"
 
       - name: Java kur
         uses: actions/setup-java@v4
@@ -88,40 +64,47 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Platform iskeletini uret
+      - name: Android iskeletini uret
+        working-directory: ${{ steps.kaynak.outputs.kok }}
         run: |
           flutter create --platforms=android --org com.vega \
             --project-name vega_iptv /tmp/iskelet
           cp -R /tmp/iskelet/android ./android
 
       - name: Android ayarlarini uygula
+        working-directory: ${{ steps.kaynak.outputs.kok }}
         run: bash tool/patch_android.sh
 
       - name: Paketleri indir
+        working-directory: ${{ steps.kaynak.outputs.kok }}
         run: flutter pub get
 
       - name: APK derle
-        # Tek APK: her telefonda calisir, kurmasi en kolay.
+        working-directory: ${{ steps.kaynak.outputs.kok }}
         run: flutter build apk --release
 
-      - name: APK dosyasini yukle
+      - name: APK'yi hazirla
+        run: |
+          mkdir -p /tmp/cikti
+          cp "${{ steps.kaynak.outputs.kok }}/build/app/outputs/flutter-apk/app-release.apk" \
+             /tmp/cikti/VegaIPTV.apk
+          ls -la /tmp/cikti
+
+      - name: Yedek kopya (Artifacts)
         uses: actions/upload-artifact@v4
         with:
           name: VegaIPTV-android
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: /tmp/cikti/VegaIPTV.apk
           if-no-files-found: error
 
       - name: Telefondan indirilebilir surum olustur
-        # Artifact dosyalari zip icinde iner ve telefonda acmak zahmetlidir.
-        # Burada APK dogrudan indirilebilen bir surum sayfasina konur:
-        # telefonun tarayicisindan acip dokunmak yeterli olur.
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-son
-          name: Vega IPTV — Android (son derleme)
+          name: Vega IPTV — Android
           body: |
-            Telefonunuzun tarayicisindan asagidaki app-release.apk
+            Telefonunuzun tarayicisindan asagidaki VegaIPTV.apk
             dosyasina dokunun ve kurulumu onaylayin.
             "Bilinmeyen kaynak" uyarisi cikarsa izin verin.
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: /tmp/cikti/VegaIPTV.apk
